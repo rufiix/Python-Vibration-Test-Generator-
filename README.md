@@ -1,102 +1,79 @@
-Sine Wave Generator
-Overview
-This Python application generates sine wave audio tones using PyAudio and provides a graphical user interface (GUI) built with Tkinter. Users can specify the frequency, duration, and volume of a single tone or play a sequence of preset tones. The application displays real-time playback information and supports editing and playing a sequence of up to five presets.
-Features
+# README: Aplikacja do Testów Wibracji
 
-Single Tone Playback: Generate a sine wave with user-defined frequency (Hz), optional duration (seconds), and volume (0.0 to 1.0).
-Preset Sequence Playback: Play a sequence of up to five predefined or user-edited presets, each with frequency, duration, and volume.
-Real-Time Feedback: Displays elapsed time during playback and the current preset during sequence playback.
-Interactive GUI: Includes input fields, a volume slider, and buttons for starting, stopping, resetting time, and playing sequences.
-Input Validation: Ensures valid frequency, duration, and volume inputs.
-Clean Resource Management: Properly closes audio streams and terminates PyAudio on application exit.
+## Opis
+Aplikacja **Vibration Test App** to narzędzie do generowania i odtwarzania sygnałów dźwiękowych w celu testowania wibracji. Umożliwia generowanie sygnału sinusoidalnego lub losowego z zadanym widmem mocy (Random Sloped), z możliwością sterowania częstotliwością, głośnością i czasem trwania. Aplikacja pozwala również na odtwarzanie sekwencji presetów z różnymi czasami trwania i poziomami głośności. Interfejs użytkownika jest oparty na bibliotece **NiceGUI**, a przetwarzanie dźwięku wykorzystuje **PyAudio** i **NumPy**.
 
-Requirements
+## Funkcjonalności
+- **Tryby sygnału**: 
+  - Sygnał sinusoidalny o zadanej częstotliwości.
+  - Sygnał losowy (Random Sloped) z widmem mocy interpolowanym na podstawie punktów referencyjnych.
+- **Parametry wejściowe**:
+  - Częstotliwość (dla sygnału sinusoidalnego, w Hz).
+  - Czas trwania (w sekundach, opcjonalnie nieograniczony).
+  - Głośność (w zakresie 0–1, regulowana suwakiem i polem tekstowym).
+- **Sekwencja presetów**: Odtwarzanie sekwencji sygnałów losowych z predefiniowanymi czasami trwania i poziomami głośności.
+- **Metryki w czasie rzeczywistym**:
+  - Wyświetlanie czasu odtwarzania.
+  - Obliczanie RMS (wartości skutecznej sygnału, w g).
+  - Obliczanie błędu PSD (Power Spectral Density) dla sygnału losowego w odniesieniu do zadanego widma.
+- **Interfejs graficzny**:
+  - Intuicyjne pola wejściowe, suwak głośności, przyciski sterujące.
+  - Dynamiczne wyświetlanie metryk i statusu sekwencji.
 
-Python 3.6 or higher
-Required libraries:
-pyaudio (for audio playback)
-numpy (for sine wave generation)
-tkinter (included with standard Python for GUI)
+## Wymagania
+- Python 3.8+
+- Biblioteki:
+  - `nicegui`
+  - `pyaudio`
+  - `numpy`
+  - `scipy`
+- System z obsługą dźwięku (np. karta dźwiękowa).
 
+## Instalacja
+1. Sklonuj repozytorium lub pobierz plik źródłowy.
+2. Zainstaluj wymagane biblioteki:
+   ```bash
+   pip install nicegui pyaudio numpy scipy
+   ```
+3. Uruchom aplikację:
+   ```bash
+   python vibration_test_app.py
+   ```
 
-Install dependencies:pip install pyaudio numpy
+## Użycie
+1. Uruchom aplikację. Interfejs będzie dostępny pod adresem `http://localhost:8080`.
+2. Wybierz tryb sygnału (sine/random).
+3. Wprowadź parametry:
+   - Dla sygnału sinusoidalnego: częstotliwość (np. 440 Hz).
+   - Dla sygnału losowego: czas trwania (np. 8 s).
+   - Głośność (0–1, domyślnie 1.0).
+4. Kliknij **Start**, aby rozpocząć odtwarzanie.
+5. Użyj przycisku **Stop**, aby zatrzymać, lub **Reset**, aby zresetować czas.
+6. Aby odtworzyć sekwencję presetów, kliknij **Play sequence**.
+7. Monitoruj metryki (czas, RMS, błąd PSD) w czasie rzeczywistym.
 
+## Struktura kodu
+- **Klasa `VibrationTestApp`**:
+  - Inicjalizacja parametrów audio i stanu odtwarzania.
+  - Budowa interfejsu użytkownika (`build_ui`).
+  - Walidacja danych wejściowych (`validate_inputs`).
+  - Generowanie sygnału losowego z zadanym widmem (`generate_noise_sloped`).
+  - Obsługa odtwarzania dźwięku (`audio_callback`, `start_playback`, `stop_playback`).
+  - Aktualizacja metryk w czasie rzeczywistym (`update_time_and_metrics`).
+  - Odtwarzanie sekwencji presetów (`play_sequence`).
+  - Sprzątanie zasobów (`cleanup`).
+- **Parametry audio**:
+  - Częstotliwość próbkowania: 22050 Hz.
+  - Rozmiar bufora: 1024 ramki.
+  - Docelowy RMS sygnału losowego: 6.9 g.
+- **Widmo PSD** (dla sygnału losowego):
+  - Punkty referencyjne: od 20 Hz (0.01) do 2000 Hz (0.01).
+  - Interpolacja logarytmiczna dla ciągłego widma.
 
+## Uwagi
+- Sygnał losowy wymaga zdefiniowanego czasu trwania.
+- Metryki RMS i PSD są obliczane tylko po upływie 1 sekundy odtwarzania.
+- Głośność można regulować w czasie rzeczywistym za pomocą suwaka.
+- Aplikacja automatycznie zatrzymuje odtwarzanie po osiągnięciu zadanego czasu (jeśli określony).
+- W przypadku błędów wejściowych (np. ujemna częstotliwość), wyświetlane są powiadomienia.
 
-How to Run
-
-Ensure the required libraries are installed.
-Save the code in a file (e.g., sine_wave_generator.py).
-Run the script:python sine_wave_generator.py
-
-
-Usage:
-Single Tone:
-Enter a frequency (e.g., 440 Hz) and optional duration (e.g., 2 seconds).
-Adjust the volume using the slider.
-Click "Start" to play the tone, "Stop" to halt, or "Reset" to reset the elapsed time.
-
-
-Preset Sequence:
-Edit the preset fields (frequency, duration, volume) if desired.
-Click "Play sequence" to play all presets in order.
-The current preset and elapsed time are displayed during playback.
-
-
-Close the window to exit, ensuring proper cleanup of audio resources.
-
-
-
-GUI Layout
-
-Inputs:
-Frequency (Hz): Text field for the tone’s frequency (default: 440 Hz).
-Duration (s, optional): Text field for playback duration (leave empty for continuous playback).
-Volume: Slider from 0.0 to 1.0 (default: 1.0).
-
-
-Preset Fields: Five rows of editable fields for frequency, duration, and volume (default presets provided).
-Buttons:
-"Start": Play a single tone based on input fields.
-"Stop": Stop any ongoing playback.
-"Reset": Reset the elapsed time counter.
-"Play sequence": Play all presets sequentially.
-
-
-Labels:
-Elapsed time: Updates every 50ms during playback.
-Current preset: Shows the active preset during sequence playback.
-
-
-
-Technical Details
-
-Audio Parameters:
-Sample rate: 22,050 Hz
-Buffer size: 1,024 frames
-Format: 32-bit float, mono channel
-
-
-Sine Wave Generation: Uses NumPy to compute sine wave samples in a callback function, ensuring smooth audio with continuous phase.
-Sequence Playback: Schedules preset transitions using Tkinter’s after method, closing and reopening audio streams for each preset.
-Error Handling: Validates inputs and displays error messages for invalid values.
-
-Example Presets
-The default presets are:
-
-440 Hz, 2s, 0.5 volume
-550 Hz, 1.5s, 0.7 volume
-660 Hz, 2.5s, 0.3 volume
-770 Hz, 1s, 1.0 volume
-880 Hz, 3s, 0.6 volume
-
-Users can edit these values in the GUI.
-Limitations
-
-Requires a working audio output device.
-Presets must have positive frequency and duration, and volume between 0.0 and 1.0.
-Continuous playback (no duration) runs until manually stopped.
-Sequence playback cannot be paused; it must be stopped and restarted.
-
-License
-This project is for educational purposes and does not include a specific license. Use and modify at your own discretion.
