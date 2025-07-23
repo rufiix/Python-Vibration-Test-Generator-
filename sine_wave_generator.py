@@ -29,7 +29,7 @@ class VibrationTestApp:
         self.sequence_playing = False
         self.seq_paused = False
         self.seq_current = 0
-        self.seq_elapsed = 0.0
+        self.seq_pause_time = 0.0
 
         # Live‐analysis buffer
         self.record_buffer = deque(maxlen=int(5 * self.sample_rate / self.frames_per_buffer))
@@ -43,7 +43,7 @@ class VibrationTestApp:
             {'duration': 3.0, 'frequency': 1500.0, 'volume': 0.6},
         ]
 
-        # Build the UI and start the update timer
+        # Build UI and start timer
         self.build_ui()
         ui.timer(0.2, self.update_time_and_metrics)
 
@@ -80,8 +80,8 @@ class VibrationTestApp:
 
         ui.separator()
         self.time_label = ui.label('Time: 0.0 s')
-        self.rms_label = ui.label('RMS (g): –')
-        self.psd_label = ui.label('PSD err (%): –')
+        self.rms_label  = ui.label('RMS (g): –')
+        self.psd_label  = ui.label('PSD err (%): –')
         ui.separator()
 
         ui.label('Sequence presets (duration, frequency, volume):')
@@ -131,7 +131,6 @@ class VibrationTestApp:
 
             v = float(self.volume)
             return f, d, v
-
         except Exception as e:
             ui.notify(str(e), color='negative')
             return None, None, None
@@ -209,20 +208,20 @@ class VibrationTestApp:
         self.paused = False
         self.remaining = None
 
-        self.duration = d
-        self.volume = v
+        self.duration   = d
+        self.volume     = v
         self.start_time = time.time()
-        self.elapsed = 0.0
-        self.playing = True
+        self.elapsed    = 0.0
+        self.playing    = True
         self.record_buffer.clear()
 
         if sine_mode:
-            self.phase = 0.0
+            self.phase     = 0.0
             self.phase_inc = 2 * np.pi * f / self.sample_rate
             self.noise_data = None
         else:
             self.noise_data = self.generate_noise_sloped(d)
-            self.noise_idx = 0
+            self.noise_idx  = 0
 
         self.stream = self.p.open(
             format=pyaudio.paFloat32,
@@ -246,12 +245,12 @@ class VibrationTestApp:
     def reset_time(self):
         if self.playing:
             self.start_time = time.time()
-            self.elapsed = 0.0
+            self.elapsed    = 0.0
 
     def toggle_playback(self):
         if not self.paused:
             # Pause single signal
-            self.paused = True
+            self.paused    = True
             self.stream.stop_stream()
             self.remaining = max(0.0, self.duration - (time.time() - self.start_time))
             self.stop_resume_btn.set_text('Resume')
@@ -264,9 +263,9 @@ class VibrationTestApp:
 
     def cancel_playback(self):
         # Cancel single‐signal playback completely
-        self.paused = False
+        self.paused    = False
         self.remaining = None
-        self.playing = False
+        self.playing   = False
         if self.stream:
             self.stream.stop_stream()
             self.stream.close()
@@ -278,85 +277,79 @@ class VibrationTestApp:
         self.psd_label.set_text('PSD err (%): –')
 
     async def play_sequence(self):
-        if self.playing or self.sequence_playing:
+        if self.sequence_playing:
             return
         self.sequence_playing = True
-        self.seq_paused = False
-        self.seq_current = 0
-        self.seq_elapsed = 0.0
+        self.seq_paused       = False
+        self.seq_current      = 0
 
-        for idx, p in enumerate(self.presets):
-            if not self.sequence_playing:
-                break
-            self.seq_current = idx
+        while self.seq_current < len(self.presets) and self.sequence_playing:
+            p = self.presets[self.seq_current]
             self.seq_label.set_text(
-                f'Preset {idx+1}: {p["duration"]} s, '
+                f'Preset {self.seq_current+1}: {p["duration"]} s, '
                 f'freq={p["frequency"]} Hz, vol={p["volume"]}'
             )
-            # apply preset
-            self.mode.value = 'sine'
-            self.freq_input.value = p['frequency']
+            self.mode.value         = 'sine'
+            self.freq_input.value   = p['frequency']
             self.duration_input.value = p['duration']
             self.volume_input.value = p['volume']
+            self.start_playback()
 
-            # start or resume this preset
-            if self.seq_paused and idx == self.seq_current:
-                self.prepare_playback_offset(self.seq_elapsed)
-            else:
-                self.start_playback()
+            # wait until playback ends or paused/cancelled
+            while self.playing and not self.seq_paused and self.sequence_playing:
+                await asyncio.sleep(0.05)
 
-            while self.playing:
+            # if paused, wait until resume
+            while self.seq_paused and self.sequence_playing:
                 await asyncio.sleep(0.1)
-                if self.seq_paused or not self.sequence_playing:
-                    break
 
-            if self.seq_paused:
-                self.seq_elapsed = time.time() - self.start_time
-
-            if not self.sequence_playing:
-                break
-
-            self.seq_elapsed = 0.0  # reset for next preset
+            if not self.seq_paused:
+                self.seq_current += 1
 
         if self.sequence_playing:
             self.seq_label.set_text('Sequence completed')
         self.sequence_playing = False
-        self.seq_paused = False
+        self.seq_paused       = False
 
     def toggle_sequence(self):
+        if not self.sequence_playing or not self.stream:
+            return
+
         if not self.seq_paused:
             # Pause sequence
-            self.seq_paused = True
-            self.stop_playback()
-            self.seq_elapsed = time.time() - self.start_time
+            self.seq_pause_time = time.time()
+            self.stream.stop_stream()
+            self.seq_paused     = True
             self.seq_stop_resume.set_text('Resume Sequence')
         else:
             # Resume sequence
-            self.seq_paused = False
+            pause_duration     = time.time() - self.seq_pause_time
+            self.start_time   += pause_duration
+            self.seq_paused     = False
             self.seq_stop_resume.set_text('Stop Sequence')
-            p = self.presets[self.seq_current]
-            self.mode.value = 'sine'
-            self.freq_input.value = p['frequency']
-            self.duration_input.value = p['duration']
-            self.volume_input.value = p['volume']
-            self.start_time = time.time() - self.seq_elapsed
-            self.duration = p['duration']
-            self.prepare_playback_offset(self.seq_elapsed)
+            self.stream.start_stream()
 
     def cancel_sequence(self):
-        # Cancel entire sequence
-        self.seq_paused = False
-        self.sequence_playing = False
-        self.seq_current = 0
-        self.seq_elapsed = 0.0
+        # 1. Stop any ongoing playback
         self.stop_playback()
+
+        # 2. Reset sequence state
+        self.sequence_playing = False
+        self.seq_paused       = False
+        self.seq_current      = 0
+        self.seq_pause_time   = 0.0
+
+        # 3. Restore Stop Sequence button label
+        self.seq_stop_resume.set_text('Stop Sequence')
+
+        # 4. Notify
         self.seq_label.set_text('Sequence cancelled')
 
     def prepare_playback_offset(self, offset):
-        """Adjust phase or noise index and restart stream from offset."""
+        """Adjust phase or noise index and restart stream at offset."""
         if self.mode.value == 'sine':
             f = float(self.freq_input.value)
-            self.phase = (2 * np.pi * f * offset) % (2 * np.pi)
+            self.phase     = (2 * np.pi * f * offset) % (2 * np.pi)
             self.phase_inc = 2 * np.pi * f / self.sample_rate
         else:
             idx = int(offset * self.sample_rate)
@@ -368,19 +361,18 @@ class VibrationTestApp:
         self.time_label.set_text(f'Time: {self.elapsed:.1f} s')
         if self.playing and self.elapsed >= 1.0 and self.record_buffer:
             data = np.concatenate(list(self.record_buffer))
-            rms = np.sqrt(np.mean(data**2))
+            rms  = np.sqrt(np.mean(data**2))
             self.rms_label.set_text(f'RMS (g): {rms:.3f}')
-
             f, Pxx = welch(data, fs=self.sample_rate, nperseg=1024)
             tgt = np.array([
                 [20, 0.01], [50, 0.03], [100, 0.05],
-                [200, 0.06], [500, 0.04], [1000, 0.02],
-                [2000, 0.01]
+                [200,0.06], [500,0.04], [1000,0.02],
+                [2000,0.01]
             ])
-            logF, logP = np.log10(tgt[:, 0]), np.log10(tgt[:, 1])
-            mask = (f >= 20) & (f <= 2000)
-            interp = 10 ** np.interp(np.log10(f[mask]), logF, logP)
-            err = np.abs(Pxx[mask] - interp) / interp * 100
+            logF, logP = np.log10(tgt[:,0]), np.log10(tgt[:,1])
+            mask       = (f >= 20) & (f <= 2000)
+            interp     = 10 ** np.interp(np.log10(f[mask]), logF, logP)
+            err        = np.abs(Pxx[mask] - interp) / interp * 100
             self.psd_label.set_text(f'PSD err (%): {np.mean(err):.1f}')
 
     def cleanup(self):
