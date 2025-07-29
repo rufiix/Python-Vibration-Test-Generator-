@@ -4,11 +4,11 @@ import pyaudio
 import numpy as np
 import asyncio
 import time
-from scipy.signal import welch
+from scipy.signal import welch  ### NOWOŚĆ ### Import funkcji welch
 from collections import deque
 
 class VibrationTestApp:
-    INFINITE_LOOP_DURATION = 10.0 
+    INFINITE_LOOP_DURATION = 10.0
 
     def __init__(self):
         # Parametry audio / DSP
@@ -29,6 +29,9 @@ class VibrationTestApp:
         self.phase_inc = 0.0
         self.noise_data = None
         self.noise_idx = 0
+        
+        ### NOWOŚĆ ### Zmienna do przechowywania profilu docelowego PSD (częstotliwości i wartości)
+        self.target_psd_profile = None
 
         # Stan sekwencji
         self.sequence_playing = False
@@ -37,6 +40,7 @@ class VibrationTestApp:
         self.seq_elapsed = 0.0
 
         # Bufor do analizy na żywo
+        # Zwiększamy bufor, aby mieć wystarczająco danych dla analizy Welcha
         self.record_buffer = deque(maxlen=int(5 * self.sample_rate / self.frames_per_buffer))
 
         self.presets = [
@@ -76,7 +80,6 @@ class VibrationTestApp:
         ui.separator()
         
         ui.label('Sequence presets:')
-        # POPRAWKA: Dodanie wiersza z nagłówkami dla presetów
         with ui.row().style('gap:70px; margin-left: 20px;'):
             ui.label('Czas (s)').style('font-weight: bold;')
             ui.label('Częstotliwość (Hz)').style('font-weight: bold;')
@@ -114,6 +117,10 @@ class VibrationTestApp:
         tgt = np.array([[20,0.01],[50,0.03],[100,0.05],[200,0.06],[500,0.04],[1000,0.02],[2000,0.01]])
         logF, logP = np.log10(tgt[:, 0]), np.log10(tgt[:, 1])
         psd_ref = 10 ** np.interp(np.log10(np.clip(freqs, 20, None)), logF, logP, left=logP[0], right=logP[-1])
+        
+        ### NOWOŚĆ ### Zapisujemy profil docelowy do późniejszego porównania
+        self.target_psd_profile = {'freqs': freqs, 'psd': psd_ref}
+        
         df = self.sample_rate / M
         mag = np.sqrt(psd_ref * df)
         phase = np.exp(1j * 2 * np.pi * np.random.rand(len(freqs)))
@@ -187,6 +194,8 @@ class VibrationTestApp:
             self.phase_inc = 2 * np.pi * f / self.sample_rate
             self.phase = (2 * np.pi * f * offset) % (2 * np.pi)
             self.noise_data = None
+            ### NOWOŚĆ ### Czyścimy profil PSD, bo nie dotyczy sinusoidy
+            self.target_psd_profile = None
         else:
             if d == 0:
                 self.noise_data = self.generate_noise_sloped(self.INFINITE_LOOP_DURATION)
@@ -196,20 +205,27 @@ class VibrationTestApp:
         
         if self.stream is None or not self.stream.is_active():
             self.stream = self.p.open(format=pyaudio.paFloat32, channels=1, rate=self.sample_rate,
-                                    output=True, frames_per_buffer=self.frames_per_buffer,
-                                    stream_callback=self.audio_callback)
+                                      output=True, frames_per_buffer=self.frames_per_buffer,
+                                      stream_callback=self.audio_callback)
 
     def stop_playback(self):
         if self.stream: self.stream.close()
         self.stream = None
         self.playing = False
         self.paused = False
+        
+        ### NOWOŚĆ ### Resetujemy profil docelowy przy zatrzymaniu
+        self.target_psd_profile = None
 
         self.mode_radio.enable()
         self.freq_input.enable()
         self.duration_input.enable()
         self.stop_resume_btn.set_text('Stop')
         self.seq_stop_resume.set_text('Stop Sequence')
+        
+        ### NOWOŚĆ ### Resetujemy etykietę błędu PSD
+        self.psd_label.set_text('PSD err (%): –')
+
 
     def toggle_playback(self):
         if not self.playing: return
@@ -242,7 +258,7 @@ class VibrationTestApp:
 
                 p = self.presets[self.seq_current]
                 if float(p.get('duration', 1)) <= 0:
-                    self.seq_label.set_text(f'Preset {self.seq_current+1} has invalid duration (<=0). Skipping.')
+                    self.seq_label.set_text(f'Preset {self.seq_current+1} ma nieprawidłowy czas trwania (<=0). Pomijanie.')
                     self.seq_current += 1
                     await asyncio.sleep(1)
                     continue
@@ -271,7 +287,7 @@ class VibrationTestApp:
             
             self.stop_playback()
             self.sequence_playing = False
-            self.seq_label.set_text('Sequence finished or cancelled')
+            self.seq_label.set_text('Sekwencja zakończona lub anulowana')
 
     def toggle_sequence(self):
         if not self.sequence_playing: return
@@ -281,10 +297,10 @@ class VibrationTestApp:
 
         if self.seq_paused:
             self.seq_elapsed = time.time() - self.start_time
-            self.seq_stop_resume.set_text('Resume Sequence')
+            self.seq_stop_resume.set_text('Wznów sekwencję')
         else:
             self.start_time = time.time() - self.seq_elapsed
-            self.seq_stop_resume.set_text('Stop Sequence')
+            self.seq_stop_resume.set_text('Zatrzymaj sekwencję')
 
     def cancel_playback(self):
         if self.sequence_playing:
@@ -306,14 +322,56 @@ class VibrationTestApp:
             if self.duration == 0:
                 self.time_label.set_text(f'Time: {self.elapsed:.1f} s (Infinite)')
             else:
-                 self.time_label.set_text(f'Time: {self.elapsed:.1f} s')
+                self.time_label.set_text(f'Time: {self.elapsed:.1f} s')
             
             if self.elapsed > 0.5 and self.record_buffer:
                 data = np.concatenate(list(self.record_buffer))
                 if data.size == 0: return
+                
+                # Obliczanie RMS (bez zmian)
                 rms = np.sqrt(np.mean(data**2))
                 self.rms_label.set_text(f'RMS (g): {rms:.3f}')
+                
+                # Sprawdzamy, czy jesteśmy w trybie 'random' i czy mamy zapisany profil docelowy
+                if self.mode_radio.value == 'random' and self.target_psd_profile:
+                    # Potrzebujemy wystarczającej ilości danych do analizy Welcha (nperseg)
+                    nperseg = min(data.size, 2048)
+                    if data.size < nperseg:
+                        self.psd_label.set_text('PSD err (%): zbieranie danych...')
+                        return
 
+                    # 1. Obliczamy rzeczywiste PSD z nagranych danych
+                    f_actual, psd_actual = welch(
+                        data, fs=self.sample_rate, nperseg=nperseg, scaling='density'
+                    )
+
+                    # 2. Interpolujemy docelowe PSD do częstotliwości z 'welch'
+                    target_psd_interp = np.interp(
+                        f_actual, self.target_psd_profile['freqs'], self.target_psd_profile['psd']
+                    )
+
+                    ### NAJWAŻNIEJSZA ZMIANA JEST TUTAJ ###
+                    # Skalujemy moc docelową o kwadrat głośności, aby porównanie było sprawiedliwe.
+                    target_psd_interp *= (self.volume**2)
+                    
+                    # 3. Obliczamy błąd procentowy w zakresie 20-2000 Hz
+                    idx_range = np.where((f_actual >= 20) & (f_actual <= 2000))
+                    if idx_range[0].size > 0:
+                        psd_actual_range = psd_actual[idx_range]
+                        target_psd_interp_range = target_psd_interp[idx_range]
+                        
+                        # Unikamy dzielenia przez zero
+                        denominator = np.where(target_psd_interp_range > 1e-12, target_psd_interp_range, 1e-12)
+                        
+                        percent_error = 100 * (psd_actual_range - target_psd_interp_range) / denominator
+                        mean_abs_error = np.mean(np.abs(percent_error))
+                        
+                        self.psd_label.set_text(f'PSD err (%): {mean_abs_error:.2f}')
+                    else:
+                        self.psd_label.set_text('PSD err (%): –')
+                else:
+                    # Jeśli nie jesteśmy w trybie 'random', czyścimy etykietę
+                    self.psd_label.set_text('PSD err (%): –')
     def cleanup(self):
         self.stop_playback()
         self.p.terminate()
