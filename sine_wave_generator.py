@@ -8,6 +8,8 @@ from scipy.signal import welch
 from collections import deque
 
 class VibrationTestApp:
+    INFINITE_LOOP_DURATION = 10.0 
+
     def __init__(self):
         # Parametry audio / DSP
         self.sample_rate = 22050
@@ -56,7 +58,7 @@ class VibrationTestApp:
             ui.label('Frequency (Hz)')
             self.freq_input = ui.input(value='440.0').props('type=number step=1')
         with ui.row():
-            ui.label('Duration (s)')
+            ui.label('Duration (s) (0 = infinite)')
             self.duration_input = ui.input(value='8.0').props('type=number step=0.1')
         with ui.row():
             ui.label('Volume (0–1)')
@@ -74,11 +76,17 @@ class VibrationTestApp:
         ui.separator()
         
         ui.label('Sequence presets:')
+        # POPRAWKA: Dodanie wiersza z nagłówkami dla presetów
+        with ui.row().style('gap:70px; margin-left: 20px;'):
+            ui.label('Czas (s)').style('font-weight: bold;')
+            ui.label('Częstotliwość (Hz)').style('font-weight: bold;')
+            ui.label('Głośność').style('font-weight: bold;')
+
         for p in self.presets:
             with ui.row().style('align-items:center; gap:20px;'):
-                ui.input(value=str(p['duration'])).props('type=number step=0.1 placeholder="duration (s)"').bind_value(p, 'duration')
-                ui.input(value=str(p['frequency'])).props('type=number step=1 placeholder="frequency (Hz)"').bind_value(p, 'frequency')
-                vol_in = ui.input(value=str(p['volume'])).props('type=number step=0.01 placeholder="volume"').bind_value(p, 'volume')
+                ui.input(value=str(p['duration'])).props('type=number step=0.1').bind_value(p, 'duration')
+                ui.input(value=str(p['frequency'])).props('type=number step=1').bind_value(p, 'frequency')
+                vol_in = ui.input(value=str(p['volume'])).props('type=number step=0.01').bind_value(p, 'volume')
                 ui.slider(min=0, max=1, step=0.01, value=p['volume']).bind_value(p, 'volume').bind_value(vol_in, 'value')
 
         ui.button('Play sequence', on_click=lambda: asyncio.create_task(self.play_sequence()))
@@ -92,7 +100,7 @@ class VibrationTestApp:
             d = float(self.duration_input.value)
             v = float(self.volume)
             if sine_mode and f <= 0: raise ValueError('Frequency must be > 0')
-            if d < 0: raise ValueError('Duration must be >= 0')
+            if d < 0: raise ValueError('Duration cannot be negative')
             return f, d, v
         except Exception as e:
             ui.notify(str(e), color='negative')
@@ -124,22 +132,35 @@ class VibrationTestApp:
             block = (self.volume * np.sin(self.phase + self.phase_inc * t)).astype(np.float32)
             self.phase = (self.phase + self.phase_inc * frame_count) % (2 * np.pi)
         else:
-            if self.noise_data is None:
+            if self.noise_data is None or len(self.noise_data) == 0:
                 self.playing = False
                 return np.zeros(frame_count, dtype=np.float32).tobytes(), pyaudio.paComplete
             
-            rem = len(self.noise_data) - self.noise_idx
-            if rem >= frame_count:
-                block = self.volume * self.noise_data[self.noise_idx : self.noise_idx + frame_count]
-                self.noise_idx += frame_count
+            if self.duration == 0:
+                s = self.noise_idx
+                e = s + frame_count
+                if e < len(self.noise_data):
+                    block = self.volume * self.noise_data[s:e]
+                    self.noise_idx = e
+                else:
+                    rem_len = len(self.noise_data) - s
+                    wrap_len = frame_count - rem_len
+                    block = self.volume * np.concatenate((self.noise_data[s:], self.noise_data[:wrap_len]))
+                    self.noise_idx = wrap_len
             else:
-                last_chunk = self.volume * self.noise_data[self.noise_idx:]
-                block = np.pad(last_chunk, (0, frame_count - rem), 'constant')
-                self.playing = False
+                rem = len(self.noise_data) - self.noise_idx
+                if rem >= frame_count:
+                    block = self.volume * self.noise_data[self.noise_idx : self.noise_idx + frame_count]
+                    self.noise_idx += frame_count
+                else:
+                    last_chunk = self.volume * self.noise_data[self.noise_idx:]
+                    block = np.pad(last_chunk, (0, frame_count - rem), 'constant')
+                    self.playing = False
         
         self.record_buffer.append(block.copy())
-        current_elapsed = time.time() - self.start_time
-        if self.duration > 0 and current_elapsed >= self.duration: self.playing = False
+        if self.duration > 0:
+            current_elapsed = time.time() - self.start_time
+            if current_elapsed >= self.duration: self.playing = False
         
         return block.tobytes(), pyaudio.paContinue if self.playing else pyaudio.paComplete
 
@@ -167,7 +188,10 @@ class VibrationTestApp:
             self.phase = (2 * np.pi * f * offset) % (2 * np.pi)
             self.noise_data = None
         else:
-            self.noise_data = self.generate_noise_sloped(d)
+            if d == 0:
+                self.noise_data = self.generate_noise_sloped(self.INFINITE_LOOP_DURATION)
+            else:
+                self.noise_data = self.generate_noise_sloped(d)
             self.noise_idx = min(int(offset * self.sample_rate), len(self.noise_data))
         
         if self.stream is None or not self.stream.is_active():
@@ -184,12 +208,12 @@ class VibrationTestApp:
         self.mode_radio.enable()
         self.freq_input.enable()
         self.duration_input.enable()
-        # POPRAWKA 1: Resetuj tekst przycisku do stanu domyślnego
         self.stop_resume_btn.set_text('Stop')
+        self.seq_stop_resume.set_text('Stop Sequence')
 
     def toggle_playback(self):
         if not self.playing: return
-
+        
         self.paused = not self.paused
         if self.paused:
             self.elapsed = time.time() - self.start_time
@@ -202,7 +226,6 @@ class VibrationTestApp:
         if self.sequence_playing: return
         self.sequence_playing = True
         
-        # POPRAWKA 2: Zapisz stan UI przed uruchomieniem sekwencji
         original_freq = self.freq_input.value
         original_duration = self.duration_input.value
         original_volume = self.volume_input.value
@@ -218,6 +241,12 @@ class VibrationTestApp:
                     continue
 
                 p = self.presets[self.seq_current]
+                if float(p.get('duration', 1)) <= 0:
+                    self.seq_label.set_text(f'Preset {self.seq_current+1} has invalid duration (<=0). Skipping.')
+                    self.seq_current += 1
+                    await asyncio.sleep(1)
+                    continue
+
                 self.seq_label.set_text(f'Preset {self.seq_current+1}: {p["duration"]}s, {p["frequency"]}Hz, vol={p["volume"]}')
                 self.mode_radio.value = 'sine'
                 self.freq_input.value = str(p['frequency'])
@@ -236,7 +265,6 @@ class VibrationTestApp:
                 self.seq_current += 1
                 await asyncio.sleep(0.1)
         finally:
-            # POPRAWKA 2: Przywróć stan UI po zakończeniu sekwencji (zawsze)
             self.freq_input.value = original_freq
             self.duration_input.value = original_duration
             self.volume_input.value = original_volume
@@ -255,6 +283,7 @@ class VibrationTestApp:
             self.seq_elapsed = time.time() - self.start_time
             self.seq_stop_resume.set_text('Resume Sequence')
         else:
+            self.start_time = time.time() - self.seq_elapsed
             self.seq_stop_resume.set_text('Stop Sequence')
 
     def cancel_playback(self):
@@ -270,12 +299,15 @@ class VibrationTestApp:
     def cancel_sequence(self):
         self.sequence_playing = False
         self.seq_paused = False
-        # `play_sequence` samo się zakończy i posprząta dzięki `finally`
 
     def update_time_and_metrics(self):
         if self.playing and not self.paused:
             self.elapsed = time.time() - self.start_time
-            self.time_label.set_text(f'Time: {self.elapsed:.1f} s')
+            if self.duration == 0:
+                self.time_label.set_text(f'Time: {self.elapsed:.1f} s (Infinite)')
+            else:
+                 self.time_label.set_text(f'Time: {self.elapsed:.1f} s')
+            
             if self.elapsed > 0.5 and self.record_buffer:
                 data = np.concatenate(list(self.record_buffer))
                 if data.size == 0: return
