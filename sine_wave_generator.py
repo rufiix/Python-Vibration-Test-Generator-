@@ -32,7 +32,7 @@ class VibrationTestApp:
         self.sequence_playing = False
         self.seq_paused = False
         self.seq_current = 0
-        self.seq_elapsed = 0.0 # Czas, który upłynął w BIEŻĄCYM kroku sekwencji
+        self.seq_elapsed = 0.0
 
         # Bufor do analizy na żywo
         self.record_buffer = deque(maxlen=int(5 * self.sample_rate / self.frames_per_buffer))
@@ -51,7 +51,7 @@ class VibrationTestApp:
         ui.label('Vibration Test: Sine & Random Sloped').style('font-size:1.2em; margin-bottom:10px;')
         with ui.row():
             ui.label('Signal mode:')
-            self.mode = ui.radio(['sine', 'random'], value='sine')
+            self.mode_radio = ui.radio(['sine', 'random'], value='sine')
         with ui.row():
             ui.label('Frequency (Hz)')
             self.freq_input = ui.input(value='440.0').props('type=number step=1')
@@ -119,11 +119,15 @@ class VibrationTestApp:
         if self.paused: return np.zeros(frame_count, dtype=np.float32).tobytes(), pyaudio.paContinue
         if not self.playing: return np.zeros(frame_count, dtype=np.float32).tobytes(), pyaudio.paComplete
 
-        if self.mode.value == 'sine':
+        if self.mode_radio.value == 'sine':
             t = np.arange(frame_count, dtype=np.float32)
             block = (self.volume * np.sin(self.phase + self.phase_inc * t)).astype(np.float32)
             self.phase = (self.phase + self.phase_inc * frame_count) % (2 * np.pi)
         else:
+            if self.noise_data is None:
+                self.playing = False
+                return np.zeros(frame_count, dtype=np.float32).tobytes(), pyaudio.paComplete
+            
             rem = len(self.noise_data) - self.noise_idx
             if rem >= frame_count:
                 block = self.volume * self.noise_data[self.noise_idx : self.noise_idx + frame_count]
@@ -141,9 +145,14 @@ class VibrationTestApp:
 
     def start_playback(self, offset: float = 0.0):
         if self.playing and not self.paused: return
-        sine_mode = (self.mode.value == 'sine')
+        sine_mode = (self.mode_radio.value == 'sine')
         f, d, v = self.validate_inputs(sine_mode)
         if d is None: return
+
+        if not self.sequence_playing:
+            self.mode_radio.disable()
+            self.freq_input.disable()
+            self.duration_input.disable()
 
         self.playing = True
         self.paused = False
@@ -156,6 +165,7 @@ class VibrationTestApp:
         if sine_mode:
             self.phase_inc = 2 * np.pi * f / self.sample_rate
             self.phase = (2 * np.pi * f * offset) % (2 * np.pi)
+            self.noise_data = None
         else:
             self.noise_data = self.generate_noise_sloped(d)
             self.noise_idx = min(int(offset * self.sample_rate), len(self.noise_data))
@@ -171,6 +181,12 @@ class VibrationTestApp:
         self.playing = False
         self.paused = False
 
+        self.mode_radio.enable()
+        self.freq_input.enable()
+        self.duration_input.enable()
+        # POPRAWKA 1: Resetuj tekst przycisku do stanu domyślnego
+        self.stop_resume_btn.set_text('Stop')
+
     def toggle_playback(self):
         if not self.playing: return
 
@@ -185,50 +201,60 @@ class VibrationTestApp:
     async def play_sequence(self):
         if self.sequence_playing: return
         self.sequence_playing = True
+        
+        # POPRAWKA 2: Zapisz stan UI przed uruchomieniem sekwencji
+        original_freq = self.freq_input.value
+        original_duration = self.duration_input.value
+        original_volume = self.volume_input.value
+        
         self.seq_current = 0
         self.seq_elapsed = 0.0
         self.record_buffer.clear()
 
-        while self.seq_current < len(self.presets) and self.sequence_playing:
-            if self.seq_paused:
+        try:
+            while self.seq_current < len(self.presets) and self.sequence_playing:
+                if self.seq_paused:
+                    await asyncio.sleep(0.1)
+                    continue
+
+                p = self.presets[self.seq_current]
+                self.seq_label.set_text(f'Preset {self.seq_current+1}: {p["duration"]}s, {p["frequency"]}Hz, vol={p["volume"]}')
+                self.mode_radio.value = 'sine'
+                self.freq_input.value = str(p['frequency'])
+                self.duration_input.value = str(p['duration'])
+                self.volume_input.value = str(p['volume'])
+                
+                self.start_playback(offset=self.seq_elapsed)
+                
+                while self.playing and self.sequence_playing:
+                    await asyncio.sleep(0.05)
+                
+                if self.seq_paused: continue
+                if not self.sequence_playing: break
+
+                self.seq_elapsed = 0.0
+                self.seq_current += 1
                 await asyncio.sleep(0.1)
-                continue
-
-            p = self.presets[self.seq_current]
-            self.seq_label.set_text(f'Preset {self.seq_current+1}: {p["duration"]}s, {p["frequency"]}Hz, vol={p["volume"]}')
-            self.mode.value = 'sine'
-            self.freq_input.value = str(p['frequency'])
-            self.duration_input.value = str(p['duration'])
-            self.volume_input.value = str(p['volume'])
+        finally:
+            # POPRAWKA 2: Przywróć stan UI po zakończeniu sekwencji (zawsze)
+            self.freq_input.value = original_freq
+            self.duration_input.value = original_duration
+            self.volume_input.value = original_volume
             
-            self.start_playback(offset=self.seq_elapsed)
-            
-            while self.playing and self.sequence_playing:
-                await asyncio.sleep(0.05)
-            
-            if self.seq_paused: continue
-            if not self.sequence_playing: break
-
-            self.seq_elapsed = 0.0
-            self.seq_current += 1
-            await asyncio.sleep(0.1)
-
-        self.stop_playback()
-        self.sequence_playing = False
-        self.seq_label.set_text('Sequence finished or cancelled')
+            self.stop_playback()
+            self.sequence_playing = False
+            self.seq_label.set_text('Sequence finished or cancelled')
 
     def toggle_sequence(self):
         if not self.sequence_playing: return
 
         self.seq_paused = not self.seq_paused
-        self.paused = self.seq_paused # Synchronizuj globalną flagę pauzy
+        self.paused = self.seq_paused
 
         if self.seq_paused:
             self.seq_elapsed = time.time() - self.start_time
             self.seq_stop_resume.set_text('Resume Sequence')
         else:
-            # Nie musimy tu nic więcej robić, pętla play_sequence
-            # sama wznowi odtwarzanie z poprawnym offsetem.
             self.seq_stop_resume.set_text('Stop Sequence')
 
     def cancel_playback(self):
@@ -244,8 +270,7 @@ class VibrationTestApp:
     def cancel_sequence(self):
         self.sequence_playing = False
         self.seq_paused = False
-        self.stop_playback()
-        self.seq_label.set_text('Sequence cancelled')
+        # `play_sequence` samo się zakończy i posprząta dzięki `finally`
 
     def update_time_and_metrics(self):
         if self.playing and not self.paused:
