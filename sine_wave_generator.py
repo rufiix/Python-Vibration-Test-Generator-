@@ -263,4 +263,4 @@ class VibrationTestApp:
 
 app = VibrationTestApp()
 ui.on('shutdown', app.cleanup)
-ui.run(title='Vibration Test App', port=8080)
+ui.run(title='Vibration Test App', port=8080, host='0.0.0.0', show=False)
