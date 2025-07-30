@@ -96,7 +96,6 @@ class VibrationTestApp:
 
         with ui.row().style('align-items: center;'):
             ui.button('Play sequence', on_click=lambda: asyncio.create_task(self.play_sequence()))
-            # === POPRAWKA 2: Dodanie checkboxa do zapętlania sekwencji ===
             self.loop_sequence_checkbox = ui.checkbox('Loop sequence')
             
         self.seq_stop_resume = ui.button('Stop Sequence', on_click=self.toggle_sequence).props('color=warning').bind_visibility_from(self, 'sequence_playing')
@@ -140,17 +139,17 @@ class VibrationTestApp:
         if self.paused: return (np.zeros(frame_count, dtype=np.float32).tobytes(), pyaudio.paContinue)
         if not self.playing: return (np.zeros(frame_count, dtype=np.float32).tobytes(), pyaudio.paComplete)
 
-        block = np.zeros(frame_count, dtype=np.float32) # Inicjalizacja pustego bloku
+        block = np.zeros(frame_count, dtype=np.float32)
 
         if self.mode_radio.value == 'sine':
             t = np.arange(frame_count, dtype=np.float32)
             block = (self.volume * np.sin(self.phase + self.phase_inc * t)).astype(np.float32)
             self.phase = (self.phase + self.phase_inc * frame_count) % (2 * np.pi)
-        else: # 'random'
+        else:
             if self.noise_data is None or len(self.noise_data) == 0:
                 self.playing = False
             else:
-                if self.duration == 0: # Pętla
+                if self.duration == 0:
                     s, e = self.noise_idx, self.noise_idx + frame_count
                     if e < len(self.noise_data):
                         block = self.volume * self.noise_data[s:e]
@@ -160,7 +159,7 @@ class VibrationTestApp:
                         wrap = frame_count - rem
                         block = self.volume * np.concatenate((self.noise_data[s:], self.noise_data[:wrap]))
                         self.noise_idx = wrap
-                else: # Czas skończony
+                else:
                     rem = len(self.noise_data) - self.noise_idx
                     if rem >= frame_count:
                         block = self.volume * self.noise_data[self.noise_idx : self.noise_idx + frame_count]
@@ -171,12 +170,7 @@ class VibrationTestApp:
                         self.playing = False
 
         self.record_buffer.append(block.copy())
-        if self.duration > 0 and (time.time() - self.start_time) >= self.duration:
-            self.playing = False
 
-        # === POPRAWKA 1: Płynne wygaszanie sygnału na końcu ===
-        # Jeśli to ostatni blok danych (flaga playing została właśnie ustawiona na False),
-        # zastosuj płynne wygaszenie, aby uniknąć "kliknięcia".
         if not self.playing:
             fade_out_ramp = np.linspace(1, 0, len(block), dtype=np.float32)
             block *= fade_out_ramp
@@ -221,12 +215,7 @@ class VibrationTestApp:
                 self.stop_playback()
 
     def stop_playback(self):
-        # Ustawienie flagi `playing` na False da sygnał do `audio_callback`,
-        # aby ostatni blok danych został wygaszony.
         self.playing = False
-        
-        # Krótka pauza, aby pozwolić callbackowi przetworzyć ostatni (wygaszony) blok.
-        # Bez tego strumień mógłby zostać zamknięty zanim wygaszanie nastąpi.
         time.sleep(0.05) 
 
         if self.stream:
@@ -241,6 +230,7 @@ class VibrationTestApp:
             self.mode_radio.enable()
             self.freq_input.enable()
             self.duration_input.enable()
+            
         self.stop_resume_btn.set_text('Stop')
         self.seq_stop_resume.set_text('Stop Sequence')
         self.psd_label.set_text('PSD err (%): –')
@@ -265,7 +255,6 @@ class VibrationTestApp:
         }
 
         try:
-            # === POPRAWKA 2: Główna pętla do obsługi zapętlania ===
             while self.sequence_playing:
                 self.seq_current = 0
                 while self.seq_current < len(self.presets) and self.sequence_playing:
@@ -297,12 +286,11 @@ class VibrationTestApp:
                     self.seq_current += 1
                     await asyncio.sleep(0.1)
                 
-                # Po przejściu wszystkich presetów sprawdź, czy należy zapętlić
                 if not self.loop_sequence_checkbox.value or not self.sequence_playing:
-                    break # Wyjdź z głównej pętli, jeśli nie ma zapętlania
+                    break
                 else:
                     self.seq_label.set_text("Looping sequence...")
-                    await asyncio.sleep(0.5) # Krótka przerwa przed zapętleniem
+                    await asyncio.sleep(0.5)
         finally:
             self.stop_playback()
             self.sequence_playing = False
@@ -341,6 +329,11 @@ class VibrationTestApp:
         if self.playing and not self.paused:
             self.elapsed = time.time() - self.start_time
             self.time_label.set_text(f'Time: {self.elapsed:.1f} s' + (' (Infinite)' if self.duration == 0 else ''))
+
+            # === KLUCZOWA POPRAWKA ===
+            if self.duration > 0 and self.elapsed >= self.duration:
+                self.stop_playback()
+                return # Zakończ, aby uniknąć obliczeń na zatrzymanym strumieniu
 
             if self.elapsed > 0.5 and self.record_buffer:
                 data = np.concatenate(list(self.record_buffer))
