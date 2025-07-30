@@ -1,10 +1,11 @@
+# Wersja kodu bez nieudanej próby wyciszenia
 import nicegui
 from nicegui import ui
 import pyaudio
 import numpy as np
 import asyncio
 import time
-from scipy.signal import welch  ### NOWOŚĆ ### Import funkcji welch
+from scipy.signal import welch
 from collections import deque
 
 class VibrationTestApp:
@@ -15,10 +16,12 @@ class VibrationTestApp:
         self.sample_rate = 22050
         self.frames_per_buffer = 1024
         self.target_rms = 6.9
+        # Inicjalizacja PyAudio z powrotem wewnątrz klasy
         self.p = pyaudio.PyAudio()
         self.stream = None
 
-        # Stan pojedynczego sygnału
+        # ... cała reszta klasy bez zmian ...
+        # (wklej tutaj resztę klasy z wersji, która poprawnie obliczała błąd PSD)
         self.playing = False
         self.paused = False
         self.start_time = 0.0
@@ -29,20 +32,12 @@ class VibrationTestApp:
         self.phase_inc = 0.0
         self.noise_data = None
         self.noise_idx = 0
-        
-        ### NOWOŚĆ ### Zmienna do przechowywania profilu docelowego PSD (częstotliwości i wartości)
         self.target_psd_profile = None
-
-        # Stan sekwencji
         self.sequence_playing = False
         self.seq_paused = False
         self.seq_current = 0
         self.seq_elapsed = 0.0
-
-        # Bufor do analizy na żywo
-        # Zwiększamy bufor, aby mieć wystarczająco danych dla analizy Welcha
         self.record_buffer = deque(maxlen=int(5 * self.sample_rate / self.frames_per_buffer))
-
         self.presets = [
             {'duration': 2.0, 'frequency': 200.0, 'volume': 0.5},
             {'duration': 1.5, 'frequency': 440.0, 'volume': 0.7},
@@ -118,7 +113,6 @@ class VibrationTestApp:
         logF, logP = np.log10(tgt[:, 0]), np.log10(tgt[:, 1])
         psd_ref = 10 ** np.interp(np.log10(np.clip(freqs, 20, None)), logF, logP, left=logP[0], right=logP[-1])
         
-        ### NOWOŚĆ ### Zapisujemy profil docelowy do późniejszego porównania
         self.target_psd_profile = {'freqs': freqs, 'psd': psd_ref}
         
         df = self.sample_rate / M
@@ -194,7 +188,6 @@ class VibrationTestApp:
             self.phase_inc = 2 * np.pi * f / self.sample_rate
             self.phase = (2 * np.pi * f * offset) % (2 * np.pi)
             self.noise_data = None
-            ### NOWOŚĆ ### Czyścimy profil PSD, bo nie dotyczy sinusoidy
             self.target_psd_profile = None
         else:
             if d == 0:
@@ -213,8 +206,6 @@ class VibrationTestApp:
         self.stream = None
         self.playing = False
         self.paused = False
-        
-        ### NOWOŚĆ ### Resetujemy profil docelowy przy zatrzymaniu
         self.target_psd_profile = None
 
         self.mode_radio.enable()
@@ -223,7 +214,6 @@ class VibrationTestApp:
         self.stop_resume_btn.set_text('Stop')
         self.seq_stop_resume.set_text('Stop Sequence')
         
-        ### NOWOŚĆ ### Resetujemy etykietę błędu PSD
         self.psd_label.set_text('PSD err (%): –')
 
 
@@ -328,39 +318,30 @@ class VibrationTestApp:
                 data = np.concatenate(list(self.record_buffer))
                 if data.size == 0: return
                 
-                # Obliczanie RMS (bez zmian)
                 rms = np.sqrt(np.mean(data**2))
                 self.rms_label.set_text(f'RMS (g): {rms:.3f}')
                 
-                # Sprawdzamy, czy jesteśmy w trybie 'random' i czy mamy zapisany profil docelowy
                 if self.mode_radio.value == 'random' and self.target_psd_profile:
-                    # Potrzebujemy wystarczającej ilości danych do analizy Welcha (nperseg)
                     nperseg = min(data.size, 2048)
                     if data.size < nperseg:
                         self.psd_label.set_text('PSD err (%): zbieranie danych...')
                         return
 
-                    # 1. Obliczamy rzeczywiste PSD z nagranych danych
                     f_actual, psd_actual = welch(
                         data, fs=self.sample_rate, nperseg=nperseg, scaling='density'
                     )
 
-                    # 2. Interpolujemy docelowe PSD do częstotliwości z 'welch'
                     target_psd_interp = np.interp(
                         f_actual, self.target_psd_profile['freqs'], self.target_psd_profile['psd']
                     )
 
-                    ### NAJWAŻNIEJSZA ZMIANA JEST TUTAJ ###
-                    # Skalujemy moc docelową o kwadrat głośności, aby porównanie było sprawiedliwe.
                     target_psd_interp *= (self.volume**2)
                     
-                    # 3. Obliczamy błąd procentowy w zakresie 20-2000 Hz
                     idx_range = np.where((f_actual >= 20) & (f_actual <= 2000))
                     if idx_range[0].size > 0:
                         psd_actual_range = psd_actual[idx_range]
                         target_psd_interp_range = target_psd_interp[idx_range]
                         
-                        # Unikamy dzielenia przez zero
                         denominator = np.where(target_psd_interp_range > 1e-12, target_psd_interp_range, 1e-12)
                         
                         percent_error = 100 * (psd_actual_range - target_psd_interp_range) / denominator
@@ -370,12 +351,13 @@ class VibrationTestApp:
                     else:
                         self.psd_label.set_text('PSD err (%): –')
                 else:
-                    # Jeśli nie jesteśmy w trybie 'random', czyścimy etykietę
                     self.psd_label.set_text('PSD err (%): –')
+
     def cleanup(self):
         self.stop_playback()
         self.p.terminate()
 
+# Główna część skryptu wraca do prostej formy
 app = VibrationTestApp()
 ui.on('shutdown', app.cleanup)
 ui.run(title='Vibration Test App', port=8080, host='0.0.0.0', show=False)
